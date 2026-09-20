@@ -63,7 +63,14 @@ jobs:
       - name: Build Windows installer and portable EXE
         working-directory: build-source/ZeidlerGPT-V3.0.1
         shell: powershell
-        run: npm run dist
+        run: |
+          npm run build
+          npx electron-builder --win nsis --publish never
+          Move-Item "dist-installer\ZeidlerGPT-3.0.1-x64.exe" "dist-installer\ZeidlerGPT-Setup-3.0.1-x64.exe" -Force
+          if (Test-Path "dist-installer\ZeidlerGPT-3.0.1-x64.exe.blockmap") {
+            Move-Item "dist-installer\ZeidlerGPT-3.0.1-x64.exe.blockmap" "dist-installer\ZeidlerGPT-Setup-3.0.1-x64.exe.blockmap" -Force
+          }
+          npx electron-builder --win portable --publish never
 
       - name: Upload Windows build artifacts
         uses: actions/upload-artifact@v4
