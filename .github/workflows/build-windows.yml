@@ -65,7 +65,7 @@ jobs:
           '@.Trim()
           if (-not $chatView.Contains($oldScroll)) { throw "ChatView scroll patch target not found." }
           $chatView = $chatView.Replace($oldScroll, $newScroll)
-          $chatView = $chatView.Replace('markdownEnabled={markdownEnabled}`n              onCopy={onCopy}`n              onRegenerate={() => {}}', 'markdownEnabled={false}`n              streaming`n              onCopy={onCopy}`n              onRegenerate={null}')
+          $chatView = $chatView -replace 'markdownEnabled=\{markdownEnabled\}\s+onCopy=\{onCopy\}\s+onRegenerate=\{\(\) => \{\}\}', "markdownEnabled={false}`n              streaming`n              onCopy={onCopy}`n              onRegenerate={null}"
           [IO.File]::WriteAllText($chatViewPath, $chatView, $utf8)
 
           # Render the live stream as plain text. Markdown is parsed once after completion.
@@ -116,33 +116,6 @@ jobs:
           }
           '@
           [IO.File]::WriteAllText($messagePath, $messageSource.Trim() + "`n", $utf8)
-
-          # Coalesce streaming chunks to at most one React state update per animation frame.
-          $appPath = Join-Path $root "src\App.jsx"
-          $appSource = [IO.File]::ReadAllText($appPath)
-          $appSource = $appSource.Replace(
-            '  const currentChatIdRef = useRef(null);',
-            "  const currentChatIdRef = useRef(null);`n  const streamBufferRef = useRef('');`n  const streamFrameRef = useRef(0);"
-          )
-          $oldChunk = @'
-              setStreaming((prev) => prev || { requestId, chatId });
-              setStreamText((prev) => prev + chunk);
-          '@.Trim()
-          $newChunk = @'
-              setStreaming((prev) => prev || { requestId, chatId });
-              streamBufferRef.current += typeof chunk === 'string' ? chunk : String(chunk ?? '');
-              if (!streamFrameRef.current) {
-                streamFrameRef.current = requestAnimationFrame(() => {
-                  const buffered = streamBufferRef.current;
-                  streamBufferRef.current = '';
-                  streamFrameRef.current = 0;
-                  if (buffered) setStreamText((prev) => prev + buffered);
-                });
-              }
-          '@.Trim()
-          if (-not $appSource.Contains($oldChunk)) { throw "App stream patch target not found." }
-          $appSource = $appSource.Replace($oldChunk, $newChunk)
-          [IO.File]::WriteAllText($appPath, $appSource, $utf8)
 
           # Add a top-level React error boundary so a render error can never leave a black window.
           $mainPath = Join-Path $root "src\main.jsx"
