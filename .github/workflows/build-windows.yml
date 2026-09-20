@@ -1,0 +1,62 @@
+name: Build ZeidlerGPT Windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Reconstruct ZeidlerGPT source
+        shell: powershell
+        run: |
+          $parts = Get-ChildItem ".build10\source.part*.b64" | Sort-Object Name
+          if ($parts.Count -ne 12) {
+            throw "Expected 12 main source parts, found $($parts.Count)."
+          }
+          $base64 = ($parts | ForEach-Object { (Get-Content $_.FullName -Raw).Trim() }) -join ""
+          $tail = (Get-Content ".build\source.part005.b64" -Raw).Trim()
+          $base64 += $tail
+          [IO.File]::WriteAllBytes("ZeidlerGPT-bootstrap.zip", [Convert]::FromBase64String($base64))
+          Expand-Archive -Path "ZeidlerGPT-bootstrap.zip" -DestinationPath "build-source" -Force
+          if (-not (Test-Path "build-source\ZeidlerGPT-V3.0.1\package.json")) {
+            throw "Source archive was reconstructed but package.json was not found."
+          }
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        working-directory: build-source/ZeidlerGPT-V3.0.1
+        shell: powershell
+        run: npm install
+
+      - name: Smoke test
+        working-directory: build-source/ZeidlerGPT-V3.0.1
+        shell: powershell
+        run: npm run smoke
+
+      - name: Build Windows installer and portable EXE
+        working-directory: build-source/ZeidlerGPT-V3.0.1
+        shell: powershell
+        run: npm run dist
+
+      - name: Upload Windows build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZeidlerGPT-V3.0.1-Windows
+          path: |
+            build-source/ZeidlerGPT-V3.0.1/dist-installer/*.exe
+            build-source/ZeidlerGPT-V3.0.1/dist-installer/*.blockmap
+          if-no-files-found: error
