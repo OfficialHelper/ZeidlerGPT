@@ -40,8 +40,10 @@ jobs:
           if ($null -ne $pkg.build.win.publisherName) {
             $pkg.build.win.PSObject.Properties.Remove("publisherName")
           }
-          $pkg | ConvertTo-Json -Depth 20 | Set-Content $packagePath -Encoding UTF8
-          Write-Host "Removed obsolete build.win.publisherName for electron-builder v26."
+          $json = $pkg | ConvertTo-Json -Depth 20
+          $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+          [System.IO.File]::WriteAllText($packagePath, $json, $utf8NoBom)
+          Write-Host "Removed obsolete build.win.publisherName and wrote package.json as UTF-8 without BOM."
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
