@@ -5,6 +5,8 @@ on:
   push:
     branches:
       - main
+    paths:
+      - '.github/workflows/build-windows.yml'
 
 jobs:
   build-windows:
@@ -32,18 +34,184 @@ jobs:
             throw "Source archive was reconstructed but package.json was not found."
           }
 
-      - name: Fix electron-builder v26 config
-        shell: powershell
+      - name: Apply V3.0.2 renderer stability fix
+        shell: pwsh
         run: |
-          $packagePath = "build-source\ZeidlerGPT-V3.0.1\package.json"
+          $root = Join-Path $PWD "build-source\ZeidlerGPT-V3.0.1"
+          $utf8 = [System.Text.UTF8Encoding]::new($false)
+
+          # Bump version and remove obsolete electron-builder config.
+          $packagePath = Join-Path $root "package.json"
           $pkg = Get-Content $packagePath -Raw | ConvertFrom-Json
+          $pkg.version = "3.0.2"
           if ($null -ne $pkg.build.win.publisherName) {
             $pkg.build.win.PSObject.Properties.Remove("publisherName")
           }
-          $json = $pkg | ConvertTo-Json -Depth 20
-          $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-          [System.IO.File]::WriteAllText($packagePath, $json, $utf8NoBom)
-          Write-Host "Removed obsolete build.win.publisherName and wrote package.json as UTF-8 without BOM."
+          [IO.File]::WriteAllText($packagePath, ($pkg | ConvertTo-Json -Depth 20), $utf8)
+
+          # Do not start a new smooth-scroll animation for every streamed token.
+          $chatViewPath = Join-Path $root "src\components\ChatView.jsx"
+          $chatView = [IO.File]::ReadAllText($chatViewPath)
+          $oldScroll = @'
+          useEffect(() => endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }), [messages, streamText]);
+          '@.Trim()
+          $newScroll = @'
+          useEffect(() => {
+            const frame = requestAnimationFrame(() => {
+              try { endRef.current?.scrollIntoView?.({ block: 'end' }); } catch {}
+            });
+            return () => cancelAnimationFrame(frame);
+          }, [messages.length, streamText]);
+          '@.Trim()
+          if (-not $chatView.Contains($oldScroll)) { throw "ChatView scroll patch target not found." }
+          $chatView = $chatView.Replace($oldScroll, $newScroll)
+          $chatView = $chatView.Replace('markdownEnabled={markdownEnabled}`n              onCopy={onCopy}`n              onRegenerate={() => {}}', 'markdownEnabled={false}`n              streaming`n              onCopy={onCopy}`n              onRegenerate={null}')
+          [IO.File]::WriteAllText($chatViewPath, $chatView, $utf8)
+
+          # Render the live stream as plain text. Markdown is parsed once after completion.
+          $messagePath = Join-Path $root "src\components\MessageBubble.jsx"
+          $messageSource = @'
+          import React from 'react';
+          import { Copy, RefreshCw, User, Sparkles } from 'lucide-react';
+          import MarkdownBody from './MarkdownBody.jsx';
+
+          class MessageRenderBoundary extends React.Component {
+            constructor(props) {
+              super(props);
+              this.state = { failed: false };
+            }
+            static getDerivedStateFromError() { return { failed: true }; }
+            componentDidCatch(error) { console.error('ZeidlerGPT message render error:', error); }
+            render() {
+              if (this.state.failed) return <div className="plain-text">{this.props.fallback}</div>;
+              return this.props.children;
+            }
+          }
+
+          export default function MessageBubble({ message, markdownEnabled, streaming = false, onCopy, onRegenerate, onExternalLink }) {
+            const safe = message && typeof message === 'object' ? message : {};
+            const assistant = safe.role === 'assistant';
+            const content = typeof safe.content === 'string' ? safe.content : String(safe.content ?? '');
+            return (
+              <article className={`message-row ${assistant ? 'assistant' : 'user'}`}>
+                <div className={`message-avatar ${assistant ? 'ai' : 'human'}`}>{assistant ? <Sparkles size={17} /> : <User size={17} />}</div>
+                <div className="message-content">
+                  <div className="message-meta"><strong>{assistant ? 'ZeidlerGPT' : 'Du'}</strong>{safe.stopped ? <span className="stopped-label">gestoppt</span> : null}</div>
+                  <div className="message-text">
+                    {assistant && !streaming ? (
+                      <MessageRenderBoundary key={content} fallback={content}>
+                        <MarkdownBody enabled={markdownEnabled} onExternalLink={onExternalLink}>{content}</MarkdownBody>
+                      </MessageRenderBoundary>
+                    ) : <div className="plain-text">{content}</div>}
+                  </div>
+                  {assistant && !streaming && (
+                    <div className="message-actions">
+                      <button onClick={() => onCopy?.(content)}><Copy size={14} /> Kopieren</button>
+                      {safe.id && onRegenerate && <button onClick={() => onRegenerate(safe)}><RefreshCw size={14} /> Erneut generieren</button>}
+                    </div>
+                  )}
+                </div>
+              </article>
+            );
+          }
+          '@
+          [IO.File]::WriteAllText($messagePath, $messageSource.Trim() + "`n", $utf8)
+
+          # Coalesce streaming chunks to at most one React state update per animation frame.
+          $appPath = Join-Path $root "src\App.jsx"
+          $appSource = [IO.File]::ReadAllText($appPath)
+          $appSource = $appSource.Replace(
+            '  const currentChatIdRef = useRef(null);',
+            "  const currentChatIdRef = useRef(null);`n  const streamBufferRef = useRef('');`n  const streamFrameRef = useRef(0);"
+          )
+          $oldChunk = @'
+              setStreaming((prev) => prev || { requestId, chatId });
+              setStreamText((prev) => prev + chunk);
+          '@.Trim()
+          $newChunk = @'
+              setStreaming((prev) => prev || { requestId, chatId });
+              streamBufferRef.current += typeof chunk === 'string' ? chunk : String(chunk ?? '');
+              if (!streamFrameRef.current) {
+                streamFrameRef.current = requestAnimationFrame(() => {
+                  const buffered = streamBufferRef.current;
+                  streamBufferRef.current = '';
+                  streamFrameRef.current = 0;
+                  if (buffered) setStreamText((prev) => prev + buffered);
+                });
+              }
+          '@.Trim()
+          if (-not $appSource.Contains($oldChunk)) { throw "App stream patch target not found." }
+          $appSource = $appSource.Replace($oldChunk, $newChunk)
+          [IO.File]::WriteAllText($appPath, $appSource, $utf8)
+
+          # Add a top-level React error boundary so a render error can never leave a black window.
+          $mainPath = Join-Path $root "src\main.jsx"
+          $mainSource = @'
+          import React from 'react';
+          import { createRoot } from 'react-dom/client';
+          import App from './App.jsx';
+          import './styles.css';
+
+          class AppErrorBoundary extends React.Component {
+            constructor(props) { super(props); this.state = { error: null }; }
+            static getDerivedStateFromError(error) { return { error }; }
+            componentDidCatch(error, info) { console.error('ZeidlerGPT renderer error:', error, info); }
+            render() {
+              if (!this.state.error) return this.props.children;
+              return (
+                <div className="fatal-error-screen">
+                  <div className="fatal-error-card">
+                    <div className="fatal-error-logo">Z</div>
+                    <h1>ZeidlerGPT hat einen Darstellungsfehler abgefangen</h1>
+                    <p>Die Oberfläche bleibt verfügbar, statt nur einen schwarzen Bildschirm zu zeigen.</p>
+                    <code>{String(this.state.error?.message || this.state.error || 'Unbekannter Renderer-Fehler')}</code>
+                    <button className="primary-btn" onClick={() => window.location.reload()}>Oberfläche neu laden</button>
+                  </div>
+                </div>
+              );
+            }
+          }
+
+          createRoot(document.getElementById('root')).render(
+            <AppErrorBoundary><App /></AppErrorBoundary>
+          );
+          '@
+          [IO.File]::WriteAllText($mainPath, $mainSource.Trim() + "`n", $utf8)
+
+          $stylesPath = Join-Path $root "src\styles.css"
+          $styles = [IO.File]::ReadAllText($stylesPath)
+          $styles += @'
+
+          .fatal-error-screen { width:100%; height:100%; display:grid; place-items:center; padding:24px; background:radial-gradient(circle at 50% 15%, rgba(124,92,255,.15), transparent 34%), var(--bg); color:var(--text); }
+          .fatal-error-card { width:min(620px,100%); border:1px solid var(--border-strong); background:var(--panel); border-radius:20px; padding:26px; box-shadow:var(--shadow); display:flex; flex-direction:column; gap:13px; }
+          .fatal-error-logo { width:46px; height:46px; display:grid; place-items:center; border-radius:14px; background:linear-gradient(135deg,var(--accent),#a65cff); color:white; font-weight:800; }
+          .fatal-error-card h1 { margin:0; font-size:1.35rem; }
+          .fatal-error-card p { margin:0; color:var(--muted); line-height:1.55; }
+          .fatal-error-card code { display:block; max-height:150px; overflow:auto; padding:11px; border-radius:10px; background:var(--panel-2); border:1px solid var(--border); color:#ff9aac; white-space:pre-wrap; overflow-wrap:anywhere; }
+          .fatal-error-card .primary-btn { align-self:flex-start; }
+          '@
+          [IO.File]::WriteAllText($stylesPath, $styles, $utf8)
+
+          # Recover automatically if Chromium itself terminates the renderer process.
+          $electronMainPath = Join-Path $root "electron\main.cjs"
+          $electronMain = [IO.File]::ReadAllText($electronMainPath)
+          $marker = "  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));"
+          $replacement = @'
+            mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+
+            mainWindow.webContents.on('render-process-gone', (_event, details) => {
+              console.error('ZeidlerGPT renderer process ended:', details?.reason || 'unknown');
+              if (details?.reason === 'clean-exit' || mainWindow?.isDestroyed()) return;
+              setTimeout(() => { if (!mainWindow?.isDestroyed()) mainWindow.reload(); }, 600);
+            });
+          '@.TrimEnd()
+          if (-not $electronMain.Contains($marker)) { throw "Electron renderer recovery patch target not found." }
+          $electronMain = $electronMain.Replace($marker, $replacement)
+          [IO.File]::WriteAllText($electronMainPath, $electronMain, $utf8)
+
+          $sidebarPath = Join-Path $root "src\components\Sidebar.jsx"
+          $sidebar = [IO.File]::ReadAllText($sidebarPath).Replace('<span>V3.0.1</span>', '<span>V3.0.2</span>')
+          [IO.File]::WriteAllText($sidebarPath, $sidebar, $utf8)
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -66,17 +234,18 @@ jobs:
         run: |
           npm run build
           npx electron-builder --win nsis --publish never
-          Move-Item "dist-installer\ZeidlerGPT-3.0.1-x64.exe" "dist-installer\ZeidlerGPT-Setup-3.0.1-x64.exe" -Force
-          if (Test-Path "dist-installer\ZeidlerGPT-3.0.1-x64.exe.blockmap") {
-            Move-Item "dist-installer\ZeidlerGPT-3.0.1-x64.exe.blockmap" "dist-installer\ZeidlerGPT-Setup-3.0.1-x64.exe.blockmap" -Force
+          Move-Item "dist-installer\ZeidlerGPT-3.0.2-x64.exe" "dist-installer\ZeidlerGPT-Setup-3.0.2-x64.exe" -Force
+          if (Test-Path "dist-installer\ZeidlerGPT-3.0.2-x64.exe.blockmap") {
+            Move-Item "dist-installer\ZeidlerGPT-3.0.2-x64.exe.blockmap" "dist-installer\ZeidlerGPT-Setup-3.0.2-x64.exe.blockmap" -Force
           }
           npx electron-builder --win portable --publish never
 
       - name: Upload Windows build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ZeidlerGPT-V3.0.1-Windows
+          name: ZeidlerGPT-V3.0.2-Windows
           path: |
             build-source/ZeidlerGPT-V3.0.1/dist-installer/*.exe
             build-source/ZeidlerGPT-V3.0.1/dist-installer/*.blockmap
           if-no-files-found: error
+          retention-days: 30
