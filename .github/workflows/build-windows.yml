@@ -32,6 +32,17 @@ jobs:
             throw "Source archive was reconstructed but package.json was not found."
           }
 
+      - name: Fix electron-builder v26 config
+        shell: powershell
+        run: |
+          $packagePath = "build-source\ZeidlerGPT-V3.0.1\package.json"
+          $pkg = Get-Content $packagePath -Raw | ConvertFrom-Json
+          if ($null -ne $pkg.build.win.publisherName) {
+            $pkg.build.win.PSObject.Properties.Remove("publisherName")
+          }
+          $pkg | ConvertTo-Json -Depth 20 | Set-Content $packagePath -Encoding UTF8
+          Write-Host "Removed obsolete build.win.publisherName for electron-builder v26."
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
