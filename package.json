@@ -1,0 +1,72 @@
+{
+  "name": "zeidlergpt",
+  "version": "3.0.1",
+  "private": true,
+  "description": "ZeidlerGPT V3.0.1 - native wirkende Windows-KI-Desktop-App mit Gemini, SQLite und Admin-Panel",
+  "author": "ZeidlerGPT",
+  "license": "MIT",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "concurrently -k \"vite --host 127.0.0.1 --port 5173\" \"wait-on tcp:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
+    "build": "vite build",
+    "start": "electron .",
+    "smoke": "node scripts/smoke-check.mjs",
+    "dist": "npm run build && electron-builder --win nsis portable",
+    "dist:nsis": "npm run build && electron-builder --win nsis",
+    "dist:portable": "npm run build && electron-builder --win portable",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "dependencies": {
+    "@google/genai": "latest",
+    "better-sqlite3": "latest",
+    "lucide-react": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "react-markdown": "latest",
+    "remark-gfm": "latest"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "latest",
+    "concurrently": "latest",
+    "cross-env": "latest",
+    "electron": "latest",
+    "electron-builder": "latest",
+    "vite": "latest",
+    "wait-on": "latest"
+  },
+  "build": {
+    "appId": "de.zeidlergpt.desktop",
+    "productName": "ZeidlerGPT",
+    "artifactName": "ZeidlerGPT-${version}-${arch}.${ext}",
+    "directories": {
+      "output": "dist-installer",
+      "buildResources": "assets"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/better-sqlite3/**/*"
+    ],
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "portable", "arch": ["x64"] }
+      ],
+      "icon": "assets/icon.ico",
+      "publisherName": "ZeidlerGPT"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "ZeidlerGPT",
+      "uninstallDisplayName": "ZeidlerGPT V3.0.1"
+    }
+  }
+}
